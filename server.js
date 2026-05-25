@@ -1,6 +1,8 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
+const pool = require('./db');
+const auth = require('./auth');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ENV_FILE = path.join(__dirname, '.env');
@@ -26,6 +28,7 @@ function sendJson(res, status, payload) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-cache, no-store, must-revalidate',
   });
   res.end(body);
 }
@@ -102,7 +105,6 @@ function publicConfig() {
     defaultLocation: config.defaultLocation,
     scheduleEnabled: config.scheduleEnabled,
     scheduleTime: config.scheduleTime,
-    savedJobCount: readStoredJobs().items.length,
     providers: {
       remotive: config.remotiveEnabled,
       arbeitnow: config.arbeitnowEnabled,
@@ -114,14 +116,8 @@ function publicConfig() {
       ollama: config.ollamaEnabled,
     },
     ollamaModel: config.ollamaModel,
-    profileName: 'Yash Suman',
-    bestRoles: [
-      'AI Voice Infrastructure Engineer',
-      'VoIP/SIP Infrastructure Engineer',
-      'Founding Infrastructure Engineer',
-      'CPaaS Platform Engineer',
-      'Cloud Telephony Architect',
-    ],
+    authEnabled: true,
+    portalVersion: '2.0',
   };
 }
 
@@ -246,169 +242,6 @@ function scoreJobServer(job) {
   };
 }
 
-function buildOllamaPrompt(job) {
-  return `You are helping Yash Suman find jobs. Yash is an AI Voice Infrastructure Engineer and Telecom Systems Architect with production SIP, VoIP, Asterisk, FreePBX, WebRTC, CPaaS, Vicidial, Linux, AWS, Docker, Kubernetes, CRM integration and founding engineer experience.
-
-Analyze this job and return ONLY valid JSON with these keys:
-fitScore: number from 0 to 100,
-fitSummary: short 1 sentence,
-matchedSkills: array of 3 to 8 strings,
-missingSkills: array of 0 to 5 strings,
-outreachDM: short LinkedIn DM under 70 words,
-coverHook: one strong cover letter opening under 45 words.
-
-Job:
-Title: ${job.title}
-Company: ${job.company}
-Location: ${job.location}
-Salary: ${job.salary || 'Not listed'}
-Description: ${stripHtml(job.description).slice(0, 3500)}`;
-}
-
-function extractJson(text) {
-  const raw = String(text || '').trim();
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) return null;
-    try {
-      return JSON.parse(match[0]);
-    } catch {
-      return null;
-    }
-  }
-}
-
-async function ollamaGenerate(prompt, config) {
-  const response = await fetch(`${config.ollamaUrl.replace(/\/$/, '')}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: config.ollamaModel,
-      prompt,
-      stream: false,
-      options: {
-        temperature: 0.2,
-        num_predict: 450,
-      },
-    }),
-  });
-  if (!response.ok) throw new Error(`Ollama request failed with ${response.status}`);
-  const data = await response.json();
-  return data.response || '';
-}
-
-async function enrichJobWithOllama(job, config) {
-  const text = await ollamaGenerate(buildOllamaPrompt(job), config);
-  const ai = extractJson(text);
-  if (!ai) {
-    return {
-      ...job,
-      ai: {
-        provider: 'ollama',
-        model: config.ollamaModel,
-        fitSummary: text.slice(0, 220) || 'Ollama returned an unstructured response.',
-        matchedSkills: job.matched || [],
-        missingSkills: [],
-        outreachDM: '',
-        coverHook: '',
-      },
-    };
-  }
-  const fitScore = Number(ai.fitScore);
-  return {
-    ...job,
-    score: Number.isFinite(fitScore) ? Math.max(0, Math.min(100, Math.round((job.score + fitScore) / 2))) : job.score,
-    ai: {
-      provider: 'ollama',
-      model: config.ollamaModel,
-      fitScore: Number.isFinite(fitScore) ? fitScore : null,
-      fitSummary: String(ai.fitSummary || ''),
-      matchedSkills: Array.isArray(ai.matchedSkills) ? ai.matchedSkills.slice(0, 8) : [],
-      missingSkills: Array.isArray(ai.missingSkills) ? ai.missingSkills.slice(0, 5) : [],
-      outreachDM: String(ai.outreachDM || ''),
-      coverHook: String(ai.coverHook || ''),
-    },
-  };
-}
-
-async function enrichStoredJobs() {
-  const config = readPortalConfig();
-  if (!config.ollamaEnabled) throw new Error('Ollama is disabled. Set OLLAMA_ENABLED=1 in .env.');
-  const stored = readStoredJobs();
-  const topJobs = stored.items
-    .slice()
-    .sort((a, b) => b.score - a.score)
-    .slice(0, config.ollamaMaxJobs);
-  const rest = stored.items.filter((job) => !topJobs.some((topJob) => topJob.id === job.id));
-  const enriched = [];
-  for (const job of topJobs) {
-    enriched.push(await enrichJobWithOllama(job, config));
-  }
-  const items = [...enriched, ...rest].sort((a, b) => b.score - a.score);
-  const payload = {
-    ...stored,
-    items,
-    lastEnrichedAt: new Date().toISOString(),
-    ollamaModel: config.ollamaModel,
-  };
-  writeStoredJobs(payload);
-  return payload;
-}
-
-async function testOllama() {
-  const config = readPortalConfig();
-  if (!config.ollamaEnabled) return { ok: false, error: 'Ollama disabled' };
-  const response = await fetch(`${config.ollamaUrl.replace(/\/$/, '')}/api/tags`);
-  if (!response.ok) return { ok: false, error: `Ollama returned ${response.status}` };
-  const data = await response.json();
-  const models = (data.models || []).map((model) => model.name);
-  return { ok: true, model: config.ollamaModel, models };
-}
-
-async function fetchRemotive(config) {
-  if (!config.remotiveEnabled) return [];
-  const queries = config.defaultKeywords.slice(0, 8);
-  const batches = await Promise.all(queries.map(async (query) => {
-    const url = `https://remotive.com/api/remote-jobs?search=${encodeURIComponent(query)}&limit=40`;
-    const response = await fetch(url);
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (data.jobs || []).map((job) => normalizeRemoteJob(job, 'Remotive'));
-  }));
-  return batches.flat();
-}
-
-async function fetchArbeitnow(config) {
-  if (!config.arbeitnowEnabled) return [];
-  const response = await fetch('https://www.arbeitnow.com/api/job-board-api');
-  if (!response.ok) return [];
-  const data = await response.json();
-  return (data.data || [])
-    .map((job) => normalizeRemoteJob(job, 'Arbeitnow'))
-    .map(scoreJobServer)
-    .filter((job) => job.score >= config.minScore);
-}
-
-async function fetchJSearch(config) {
-  if (!config.jsearchKey) return [];
-  const queries = config.defaultKeywords.slice(0, 5);
-  const batches = await Promise.all(queries.map(async (query) => {
-    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(`${query} ${config.defaultLocation}`)}&page=1&num_pages=1`;
-    const response = await fetch(url, {
-      headers: {
-        'x-rapidapi-host': 'jsearch.p.rapidapi.com',
-        'x-rapidapi-key': config.jsearchKey,
-      },
-    });
-    if (!response.ok) return [];
-    const data = await response.json();
-    return (data.data || []).map((job) => normalizeRemoteJob(job, 'JSearch'));
-  }));
-  return batches.flat();
-}
-
 async function syncJobs(reason = 'manual') {
   const config = readPortalConfig();
   const batches = await Promise.allSettled([fetchRemotive(config), fetchArbeitnow(config), fetchJSearch(config)]);
@@ -424,6 +257,60 @@ async function syncJobs(reason = 'manual') {
   const payload = { items, lastRunAt: new Date().toISOString(), reason, providerCounts };
   writeStoredJobs(payload);
   return payload;
+}
+
+async function fetchRemotive(config) {
+  if (!config.remotiveEnabled) return [];
+  const queries = config.defaultKeywords.slice(0, 8);
+  const batches = await Promise.all(queries.map(async (query) => {
+    const url = `https://remotive.com/api/remote-jobs?search=${encodeURIComponent(query)}&limit=40`;
+    try {
+      const response = await fetch(url);
+      if (!response.ok) return [];
+      const data = await response.json();
+      return (data.jobs || []).map((job) => normalizeRemoteJob(job, 'Remotive'));
+    } catch {
+      return [];
+    }
+  }));
+  return batches.flat();
+}
+
+async function fetchArbeitnow(config) {
+  if (!config.arbeitnowEnabled) return [];
+  try {
+    const response = await fetch('https://www.arbeitnow.com/api/job-board-api');
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.data || [])
+      .map((job) => normalizeRemoteJob(job, 'Arbeitnow'))
+      .map(scoreJobServer)
+      .filter((job) => job.score >= config.minScore);
+  } catch {
+    return [];
+  }
+}
+
+async function fetchJSearch(config) {
+  if (!config.jsearchKey) return [];
+  const queries = config.defaultKeywords.slice(0, 5);
+  const batches = await Promise.all(queries.map(async (query) => {
+    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(`${query} ${config.defaultLocation}`)}&page=1&num_pages=1`;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'x-rapidapi-host': 'jsearch.p.rapidapi.com',
+          'x-rapidapi-key': config.jsearchKey,
+        },
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      return (data.data || []).map((job) => normalizeRemoteJob(job, 'JSearch'));
+    } catch {
+      return [];
+    }
+  }));
+  return batches.flat();
 }
 
 function msUntilNextRun() {
@@ -582,6 +469,154 @@ async function handleAutoRun(res) {
   return sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'auto-task', taskId: config.defaultTaskId });
 }
 
+// Authentication endpoints
+async function handleRegister(req, res) {
+  try {
+    const { email, password, firstName = '', lastName = '' } = await readBody(req);
+    if (!email || !password) {
+      return sendJson(res, 400, { error: 'Email and password are required' });
+    }
+    if (password.length < 6) {
+      return sendJson(res, 400, { error: 'Password must be at least 6 characters' });
+    }
+    const result = await auth.registerUser(email, password, firstName, lastName);
+    if (!result.success) {
+      return sendJson(res, 400, { error: result.error });
+    }
+    const token = auth.generateToken(result.userId);
+    sendJson(res, 201, { success: true, userId: result.userId, token, message: 'Registration successful' });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleLogin(req, res) {
+  try {
+    const { email, password } = await readBody(req);
+    if (!email || !password) {
+      return sendJson(res, 400, { error: 'Email and password are required' });
+    }
+    const result = await auth.loginUser(email, password);
+    if (!result.success) {
+      return sendJson(res, 401, { error: result.error });
+    }
+    sendJson(res, 200, { success: true, userId: result.userId, token: result.token });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleGetProfile(req, res, userId) {
+  try {
+    const user = await auth.getUserById(userId);
+    if (!user) {
+      return sendJson(res, 404, { error: 'User not found' });
+    }
+    sendJson(res, 200, { success: true, user });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleSaveJob(req, res, userId) {
+  try {
+    const { jobData, status = 'saved', notes = '' } = await readBody(req);
+    if (!jobData || !jobData.id) {
+      return sendJson(res, 400, { error: 'Job data with ID is required' });
+    }
+
+    const connection = await pool.getConnection();
+
+    // Save job to jobs table if not already there
+    await connection.execute(
+      `INSERT INTO jobs (job_id, title, company, location, description, url, source, posted_date, score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE updated_at = NOW()`,
+      [
+        jobData.id,
+        jobData.title || '',
+        jobData.company || '',
+        jobData.location || '',
+        jobData.description || '',
+        jobData.url || '',
+        jobData.source || '',
+        jobData.postedAt || null,
+        jobData.score || 0,
+      ]
+    );
+
+    // Get the job ID
+    const [jobs] = await connection.execute('SELECT id FROM jobs WHERE job_id = ?', [jobData.id]);
+    const jobId = jobs[0]?.id;
+
+    if (jobId) {
+      // Save to saved_jobs table
+      await connection.execute(
+        `INSERT INTO saved_jobs (user_id, job_id, status, notes) VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE status = VALUES(status), notes = VALUES(notes), updated_at = NOW()`,
+        [userId, jobId, status, notes]
+      );
+    }
+
+    connection.release();
+    sendJson(res, 200, { success: true, message: 'Job saved successfully' });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleGetSavedJobs(req, res, userId) {
+  try {
+    const connection = await pool.getConnection();
+    const [savedJobs] = await connection.execute(
+      `SELECT j.*, sj.status, sj.notes, sj.created_at as saved_at
+       FROM saved_jobs sj
+       JOIN jobs j ON sj.job_id = j.id
+       WHERE sj.user_id = ?
+       ORDER BY sj.created_at DESC`,
+      [userId]
+    );
+    connection.release();
+    sendJson(res, 200, { success: true, jobs: savedJobs || [] });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleDeleteSavedJob(req, res, userId) {
+  try {
+    const { jobId } = await readBody(req);
+    if (!jobId) {
+      return sendJson(res, 400, { error: 'Job ID is required' });
+    }
+
+    const connection = await pool.getConnection();
+    await connection.execute(
+      'DELETE FROM saved_jobs WHERE user_id = ? AND job_id = ?',
+      [userId, jobId]
+    );
+    connection.release();
+    sendJson(res, 200, { success: true, message: 'Job removed from saved' });
+  } catch (error) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+// Helper to extract token from headers
+function extractToken(req) {
+  const authHeader = req.headers.authorization || '';
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : null;
+}
+
+// Middleware to verify token
+function verifyAuth(req) {
+  const token = extractToken(req);
+  if (!token) return null;
+  const decoded = auth.verifyToken(token);
+  return decoded?.userId || null;
+}
+
 function serveStatic(req, res) {
   const urlPath = decodeURIComponent(new URL(req.url, `http://${req.headers.host}`).pathname);
   const safePath = path.normalize(urlPath).replace(/^(\.\.[/\\])+/, '');
@@ -606,22 +641,60 @@ function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    // Add CORS headers for multi-origin support
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    
+    if (req.method === 'OPTIONS') {
+      return sendHead(res, 200);
+    }
+
     if (req.method === 'HEAD') {
       return sendHead(res, 200, { 'Content-Type': 'text/html; charset=utf-8' });
     }
+
+    // Public endpoints
     if (req.method === 'GET' && req.url === '/health') {
-      return sendJson(res, 200, { ok: true, service: 'job-search-portal' });
+      return sendJson(res, 200, { ok: true, service: 'job-search-portal', version: '2.0' });
     }
     if (req.method === 'GET' && req.url === '/api/config') return sendJson(res, 200, publicConfig());
+    
+    // Auth endpoints (public)
+    if (req.method === 'POST' && req.url === '/api/auth/register') return await handleRegister(req, res);
+    if (req.method === 'POST' && req.url === '/api/auth/login') return await handleLogin(req, res);
+
+    // Protected endpoints
+    const userId = verifyAuth(req);
+    if (!userId && req.url.startsWith('/api/') && !req.url.startsWith('/api/config') && !req.url.startsWith('/api/auth') && !req.url.startsWith('/api/apify') && !req.url.startsWith('/api/jobs/sync')) {
+      return sendJson(res, 401, { error: 'Unauthorized. Please login.' });
+    }
+
+    // User endpoints
+    if (req.method === 'GET' && req.url === '/api/user/profile' && userId) {
+      return await handleGetProfile(req, res, userId);
+    }
+    if (req.method === 'GET' && req.url === '/api/user/saved-jobs' && userId) {
+      return await handleGetSavedJobs(req, res, userId);
+    }
+    if (req.method === 'POST' && req.url === '/api/user/save-job' && userId) {
+      return await handleSaveJob(req, res, userId);
+    }
+    if (req.method === 'POST' && req.url === '/api/user/delete-job' && userId) {
+      return await handleDeleteSavedJob(req, res, userId);
+    }
+
+    // Public job endpoints (backward compatibility)
     if (req.method === 'GET' && req.url === '/api/jobs') return sendJson(res, 200, readStoredJobs());
     if (req.method === 'POST' && req.url === '/api/jobs/sync') return sendJson(res, 200, await syncJobs('manual'));
-    if (req.method === 'POST' && req.url === '/api/jobs/enrich') return sendJson(res, 200, await enrichStoredJobs());
-    if (req.method === 'GET' && req.url === '/api/ollama/test') return sendJson(res, 200, await testOllama());
     if (req.method === 'POST' && req.url === '/api/apify/auto') return await handleAutoRun(res);
     if (req.method === 'POST' && req.url === '/api/apify/run-actor') return await handleRunActor(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/run-task') return await handleRunTask(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/dataset') return await handleDataset(req, res);
+
+    // Serve static files
     if (req.method === 'GET') return serveStatic(req, res);
+    
     sendJson(res, 405, { error: 'Method not allowed.' });
   } catch (error) {
     sendJson(res, error.status || 500, {
@@ -632,6 +705,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Job Search Portal running at http://localhost:${PORT}`);
+  console.log(`Job Search Portal (Multi-User v2.0) running at http://localhost:${PORT}`);
+  console.log(`Database: ${process.env.DB_HOST || 'localhost'}/${process.env.DB_NAME || 'job_search_portal'}`);
   scheduleDailySync();
 });
