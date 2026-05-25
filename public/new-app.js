@@ -36,7 +36,7 @@ function switchTab(tab) {
 
 async function handleLogin(e) {
     e.preventDefault();
-    const [email, password] = e.target.querySelectorAll('input').map(i => i.value);
+    const [email, password] = [...e.target.querySelectorAll('input')].map(i => i.value);
     
     try {
         const res = await fetch(`${API_BASE}/api/auth/login`, {
@@ -65,7 +65,7 @@ async function handleLogin(e) {
 
 async function handleRegister(e) {
     e.preventDefault();
-    const [email, password, firstName, lastName] = e.target.querySelectorAll('input').map(i => i.value);
+    const [email, password, firstName, lastName] = [...e.target.querySelectorAll('input')].map(i => i.value);
     
     try {
         const res = await fetch(`${API_BASE}/api/auth/register`, {
