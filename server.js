@@ -24,6 +24,11 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+function sendHead(res, status = 200, headers = {}) {
+  res.writeHead(status, headers);
+  res.end();
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -141,6 +146,12 @@ function serveStatic(req, res) {
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (req.method === 'HEAD') {
+      return sendHead(res, 200, { 'Content-Type': 'text/html; charset=utf-8' });
+    }
+    if (req.method === 'GET' && req.url === '/health') {
+      return sendJson(res, 200, { ok: true, service: 'job-search-portal' });
+    }
     if (req.method === 'POST' && req.url === '/api/apify/run-actor') return await handleRunActor(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/run-task') return await handleRunTask(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/dataset') return await handleDataset(req, res);
