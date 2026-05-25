@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Yash Job Match Portal</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">YS</div>
+        <div>
+          <strong>Job Match Portal</strong>
+          <span>AI Voice + Telecom</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Portal sections">
+        <a href="#search" class="active">Search</a>
+        <a href="#results">Matches</a>
+        <a href="#saved">Saved</a>
+        <a href="#profile">Profile</a>
+      </nav>
+
+      <div class="metric-stack">
+        <div>
+          <span id="totalJobs">0</span>
+          <small>Jobs loaded</small>
+        </div>
+        <div>
+          <span id="avgScore">0</span>
+          <small>Avg score</small>
+        </div>
+        <div>
+          <span id="savedCount">0</span>
+          <small>Saved</small>
+        </div>
+      </div>
+    </aside>
+
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <p class="eyebrow">Resume-aware search</p>
+          <h1>Find roles that fit your SIP, VoIP, AI voice and infra profile.</h1>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" id="loadSampleBtn" title="Load sample jobs" aria-label="Load sample jobs">
+            <span aria-hidden="true">↺</span>
+          </button>
+          <button class="primary-button" id="exportBtn">Export CSV</button>
+        </div>
+      </section>
+
+      <section class="grid-layout" id="search">
+        <form class="panel search-panel" id="searchForm">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Apify runner</p>
+              <h2>Search jobs</h2>
+            </div>
+            <div class="segmented" role="tablist" aria-label="Apify run mode">
+              <button type="button" class="active" data-mode="task">Task</button>
+              <button type="button" data-mode="actor">Actor</button>
+              <button type="button" data-mode="dataset">Dataset</button>
+            </div>
+          </div>
+
+          <label>
+            Apify API key
+            <input id="apiKey" type="password" autocomplete="off" placeholder="apify_api_..." required>
+          </label>
+
+          <div class="two-col">
+            <label id="taskField">
+              Task ID
+              <input id="taskId" placeholder="username~linkedin-job-task">
+            </label>
+            <label id="actorField" hidden>
+              Actor ID
+              <input id="actorId" placeholder="username~actor-name">
+            </label>
+            <label id="datasetField" hidden>
+              Dataset ID
+              <input id="datasetId" placeholder="abc123...">
+            </label>
+            <label>
+              Max jobs
+              <input id="maxItems" type="number" min="5" max="500" value="50">
+            </label>
+          </div>
+
+          <div class="two-col">
+            <label>
+              Keywords
+              <input id="keywords" value="AI voice engineer, VoIP engineer, SIP engineer, telecom infrastructure, founding engineer">
+            </label>
+            <label>
+              Location
+              <input id="location" value="Remote, India, UAE">
+            </label>
+          </div>
+
+          <label id="inputJsonField" hidden>
+            Actor input JSON
+            <textarea id="actorInput" rows="7"></textarea>
+          </label>
+
+          <div class="button-row">
+            <button class="primary-button" type="submit">Run search</button>
+            <button class="ghost-button" type="button" id="saveSettingsBtn">Save settings</button>
+          </div>
+          <p class="hint" id="statusText">API key is stored only in this browser.</p>
+        </form>
+
+        <section class="panel profile-panel" id="profile">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Fit engine</p>
+              <h2>Your CV signal</h2>
+            </div>
+            <span class="score-pill">Default profile</span>
+          </div>
+          <div class="profile-block">
+            <strong>Best roles</strong>
+            <p>AI Voice Infrastructure Engineer, VoIP/SIP Engineer, Founding Infrastructure Engineer, CPaaS Platform Engineer.</p>
+          </div>
+          <div class="skill-cloud" id="skillCloud"></div>
+          <div class="target-list" id="targetCompanies"></div>
+        </section>
+      </section>
+
+      <section class="results-layout" id="results">
+        <div class="results-header">
+          <div>
+            <p class="eyebrow">Ranked by CV fit</p>
+            <h2>Matched jobs</h2>
+          </div>
+          <div class="filters">
+            <label>
+              Minimum score
+              <input id="minScore" type="range" min="0" max="100" value="0">
+            </label>
+            <select id="sourceFilter" aria-label="Filter by source">
+              <option value="all">All sources</option>
+            </select>
+          </div>
+        </div>
+        <div class="job-list" id="jobList"></div>
+      </section>
+
+      <section class="saved-layout" id="saved">
+        <div class="results-header">
+          <div>
+            <p class="eyebrow">Application shortlist</p>
+            <h2>Saved jobs</h2>
+          </div>
+          <button class="ghost-button" id="clearSavedBtn">Clear saved</button>
+        </div>
+        <div class="job-list compact" id="savedList"></div>
+      </section>
+    </main>
+
+    <template id="jobCardTemplate">
+      <article class="job-card">
+        <div class="job-main">
+          <div>
+            <div class="job-title-row">
+              <h3></h3>
+              <span class="score-pill"></span>
+            </div>
+            <p class="company-line"></p>
+          </div>
+          <p class="reason"></p>
+          <div class="tag-row"></div>
+        </div>
+        <div class="job-actions">
+          <a class="primary-button" target="_blank" rel="noreferrer">Apply</a>
+          <button class="ghost-button save-job" type="button">Save</button>
+        </div>
+      </article>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>
