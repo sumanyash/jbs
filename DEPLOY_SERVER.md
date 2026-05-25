@@ -93,23 +93,33 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 5. Apify Use
+## 5. Automation And API Keys
 
-- Keep the Apify API key private in `/var/www/job-search-portal/.env`.
-- For easiest setup, create Apify tasks first and use Task mode.
-- Add your task ID in `.env` as `APIFY_TASK_ID=username~task-name`.
-- The portal will hide the API key field when `APIFY_API_KEY` exists on the server.
+- Keep all API keys private in `/var/www/job-search-portal/.env`.
+- The portal works without an Apify task ID using free job feeds.
+- It runs daily at 2:00 AM IST by default.
+- Add Apify actor/task/dataset IDs later only if you want Apify-specific sources.
 
 Example `.env`:
 
 ```text
 PORT=4173
-APIFY_API_KEY=apify_api_your_key_here
+SCHEDULE_ENABLED=1
+SCHEDULE_TIME=02:00
+SCHEDULE_TZ_OFFSET_MINUTES=330
+APIFY_API_KEY=
+OPENAI_API_KEY=
+GEMINI_API_KEY=
+ANTHROPIC_API_KEY=
+RAPIDAPI_JSEARCH_KEY=
 DEFAULT_APIFY_MODE=task
-APIFY_TASK_ID=username~your-job-scraper-task
+APIFY_TASK_ID=
 DEFAULT_MAX_ITEMS=75
 DEFAULT_LOCATION=Remote, India, UAE
 DEFAULT_KEYWORDS=AI voice engineer,VoIP engineer,SIP engineer,telecom infrastructure,founding engineer,CPaaS platform engineer,Asterisk engineer,WebRTC engineer
+REMOTIVE_ENABLED=1
+ARBEITNOW_ENABLED=1
+STORE_MAX_JOBS=500
 ```
 
 After editing `.env`:

@@ -8,6 +8,8 @@ const ENV_FILE = path.join(__dirname, '.env');
 loadEnv();
 
 const PORT = Number(process.env.PORT || 4173);
+const DATA_DIR = path.join(__dirname, 'data');
+const JOB_DATA_FILE = path.join(DATA_DIR, 'jobs.json');
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -70,6 +72,15 @@ function readPortalConfig() {
       'WebRTC engineer',
     ]),
     defaultLocation: process.env.DEFAULT_LOCATION || 'Remote, India, UAE',
+    scheduleEnabled: process.env.SCHEDULE_ENABLED !== '0',
+    scheduleTime: process.env.SCHEDULE_TIME || '02:00',
+    scheduleTzOffsetMinutes: Number(process.env.SCHEDULE_TZ_OFFSET_MINUTES || 330),
+    remotiveEnabled: process.env.REMOTIVE_ENABLED !== '0',
+    arbeitnowEnabled: process.env.ARBEITNOW_ENABLED !== '0',
+    jsearchKey: process.env.RAPIDAPI_JSEARCH_KEY || '',
+    openaiKey: process.env.OPENAI_API_KEY || '',
+    geminiKey: process.env.GEMINI_API_KEY || '',
+    claudeKey: process.env.ANTHROPIC_API_KEY || '',
   };
 }
 
@@ -84,6 +95,18 @@ function publicConfig() {
     defaultMaxItems: config.defaultMaxItems,
     defaultKeywords: config.defaultKeywords,
     defaultLocation: config.defaultLocation,
+    scheduleEnabled: config.scheduleEnabled,
+    scheduleTime: config.scheduleTime,
+    savedJobCount: readStoredJobs().items.length,
+    providers: {
+      remotive: config.remotiveEnabled,
+      arbeitnow: config.arbeitnowEnabled,
+      jsearch: Boolean(config.jsearchKey),
+      apify: Boolean(config.apifyToken && (config.defaultTaskId || config.defaultActorId || config.defaultDatasetId)),
+      openai: Boolean(config.openaiKey),
+      gemini: Boolean(config.geminiKey),
+      claude: Boolean(config.claudeKey),
+    },
     profileName: 'Yash Suman',
     bestRoles: [
       'AI Voice Infrastructure Engineer',
@@ -93,6 +116,192 @@ function publicConfig() {
       'Cloud Telephony Architect',
     ],
   };
+}
+
+function ensureDataDir() {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+function readStoredJobs() {
+  try {
+    if (!fs.existsSync(JOB_DATA_FILE)) return { items: [], lastRunAt: null, providerCounts: {} };
+    return JSON.parse(fs.readFileSync(JOB_DATA_FILE, 'utf8'));
+  } catch {
+    return { items: [], lastRunAt: null, providerCounts: {} };
+  }
+}
+
+function writeStoredJobs(payload) {
+  ensureDataDir();
+  fs.writeFileSync(JOB_DATA_FILE, JSON.stringify(payload, null, 2));
+}
+
+function uniqueByUrl(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = String(item.url || `${item.company}-${item.title}`).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeRemoteJob(item, source) {
+  if (source === 'Remotive') {
+    return {
+      id: `remotive-${item.id}`,
+      title: item.title,
+      company: item.company_name,
+      location: item.candidate_required_location || 'Remote',
+      url: item.url,
+      source,
+      salary: item.salary || '',
+      description: item.description || '',
+      postedAt: item.publication_date || '',
+    };
+  }
+  if (source === 'Arbeitnow') {
+    return {
+      id: item.slug || item.url,
+      title: item.title,
+      company: item.company_name,
+      location: item.location || (item.remote ? 'Remote' : 'Not listed'),
+      url: item.url,
+      source,
+      salary: '',
+      description: item.description || '',
+      postedAt: item.created_at || '',
+    };
+  }
+  if (source === 'JSearch') {
+    return {
+      id: item.job_id || item.job_apply_link,
+      title: item.job_title,
+      company: item.employer_name,
+      location: item.job_location || item.job_country || 'Not listed',
+      url: item.job_apply_link || item.job_google_link,
+      source,
+      salary: item.job_salary || '',
+      description: item.job_description || '',
+      postedAt: item.job_posted_at_datetime_utc || '',
+    };
+  }
+  return item;
+}
+
+function jobText(job) {
+  return [job.title, job.company, job.location, job.description, job.salary].filter(Boolean).join(' ').toLowerCase();
+}
+
+function scoreJobServer(job) {
+  const keywords = [
+    'ai voice', 'voice ai', 'voice agent', 'conversational ai', 'sip', 'voip', 'asterisk',
+    'freepbx', 'webrtc', 'rtp', 'pjsip', 'cpaas', 'telecom', 'telephony', 'dialer',
+    'vicidial', 'ivr', 'linux', 'infrastructure', 'distributed systems', 'high availability',
+    'founding engineer', 'platform engineer', 'cloud telephony', 'communications api',
+    'whatsapp api', 'crm integration', 'docker', 'kubernetes', 'aws', 'redis',
+  ];
+  const companies = ['vapi', 'retell', 'bland', 'twilio', 'plivo', 'bandwidth', 'elevenlabs', 'vonage', 'openai'];
+  const haystack = jobText(job);
+  const matched = keywords.filter((keyword) => haystack.includes(keyword));
+  let score = 28 + matched.reduce((sum, keyword) => sum + (/voice|sip|voip|asterisk|telecom/.test(keyword) ? 6 : 4), 0);
+  if (companies.some((company) => String(job.company || '').toLowerCase().includes(company))) score += 16;
+  if (/remote|india|uae|dubai|jaipur/i.test(job.location || '')) score += 7;
+  if (/senior|lead|staff|principal|founding|architect/i.test(job.title || '')) score += 8;
+  if (/intern|fresh|junior|campus/i.test(haystack)) score -= 18;
+  return {
+    ...job,
+    score: Math.max(0, Math.min(100, Math.round(score))),
+    matched: matched.slice(0, 8),
+    reason: matched.length ? `Matched on ${matched.slice(0, 5).join(', ')}.` : 'General infrastructure match.',
+  };
+}
+
+async function fetchRemotive(config) {
+  if (!config.remotiveEnabled) return [];
+  const queries = config.defaultKeywords.slice(0, 8);
+  const batches = await Promise.all(queries.map(async (query) => {
+    const url = `https://remotive.com/api/remote-jobs?search=${encodeURIComponent(query)}&limit=40`;
+    const response = await fetch(url);
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.jobs || []).map((job) => normalizeRemoteJob(job, 'Remotive'));
+  }));
+  return batches.flat();
+}
+
+async function fetchArbeitnow(config) {
+  if (!config.arbeitnowEnabled) return [];
+  const response = await fetch('https://www.arbeitnow.com/api/job-board-api');
+  if (!response.ok) return [];
+  const data = await response.json();
+  const keywords = config.defaultKeywords.map((keyword) => keyword.toLowerCase());
+  return (data.data || [])
+    .map((job) => normalizeRemoteJob(job, 'Arbeitnow'))
+    .filter((job) => keywords.some((keyword) => jobText(job).includes(keyword.split(' ')[0])));
+}
+
+async function fetchJSearch(config) {
+  if (!config.jsearchKey) return [];
+  const queries = config.defaultKeywords.slice(0, 5);
+  const batches = await Promise.all(queries.map(async (query) => {
+    const url = `https://jsearch.p.rapidapi.com/search?query=${encodeURIComponent(`${query} ${config.defaultLocation}`)}&page=1&num_pages=1`;
+    const response = await fetch(url, {
+      headers: {
+        'x-rapidapi-host': 'jsearch.p.rapidapi.com',
+        'x-rapidapi-key': config.jsearchKey,
+      },
+    });
+    if (!response.ok) return [];
+    const data = await response.json();
+    return (data.data || []).map((job) => normalizeRemoteJob(job, 'JSearch'));
+  }));
+  return batches.flat();
+}
+
+async function syncJobs(reason = 'manual') {
+  const config = readPortalConfig();
+  const batches = await Promise.allSettled([fetchRemotive(config), fetchArbeitnow(config), fetchJSearch(config)]);
+  const items = uniqueByUrl(batches.flatMap((batch) => batch.status === 'fulfilled' ? batch.value : []))
+    .map(scoreJobServer)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Number(process.env.STORE_MAX_JOBS || 500));
+  const providerCounts = items.reduce((counts, item) => {
+    counts[item.source] = (counts[item.source] || 0) + 1;
+    return counts;
+  }, {});
+  const payload = { items, lastRunAt: new Date().toISOString(), reason, providerCounts };
+  writeStoredJobs(payload);
+  return payload;
+}
+
+function msUntilNextRun() {
+  const config = readPortalConfig();
+  const [hour, minute] = config.scheduleTime.split(':').map(Number);
+  const now = new Date();
+  const localNow = new Date(now.getTime() + config.scheduleTzOffsetMinutes * 60_000);
+  const targetLocal = new Date(localNow);
+  targetLocal.setUTCHours(hour || 2, minute || 0, 0, 0);
+  if (targetLocal <= localNow) targetLocal.setUTCDate(targetLocal.getUTCDate() + 1);
+  const targetUtc = new Date(targetLocal.getTime() - config.scheduleTzOffsetMinutes * 60_000);
+  return targetUtc.getTime() - now.getTime();
+}
+
+function scheduleDailySync() {
+  const config = readPortalConfig();
+  if (!config.scheduleEnabled) return;
+  const delay = msUntilNextRun();
+  console.log(`Next job sync scheduled in ${Math.round(delay / 60000)} minutes.`);
+  setTimeout(async () => {
+    try {
+      const result = await syncJobs('scheduled');
+      console.log(`Scheduled job sync complete: ${result.items.length} jobs.`);
+    } catch (error) {
+      console.error('Scheduled job sync failed:', error.message);
+    } finally {
+      scheduleDailySync();
+    }
+  }, delay);
 }
 
 function readBody(req) {
@@ -193,7 +402,11 @@ async function handleDataset(req, res) {
 
 async function handleAutoRun(res) {
   const config = readPortalConfig();
-  if (!config.apifyToken) return sendJson(res, 400, { error: 'APIFY_API_KEY is missing in .env.' });
+  const hasApifyTarget = config.apifyToken && (config.defaultTaskId || config.defaultActorId || config.defaultDatasetId);
+  if (!hasApifyTarget) {
+    const payload = await syncJobs('manual-auto');
+    return sendJson(res, 200, { items: payload.items, source: 'free-providers', lastRunAt: payload.lastRunAt, providerCounts: payload.providerCounts });
+  }
 
   if (config.defaultMode === 'actor' && config.defaultActorId) {
     const input = {
@@ -249,6 +462,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, service: 'job-search-portal' });
     }
     if (req.method === 'GET' && req.url === '/api/config') return sendJson(res, 200, publicConfig());
+    if (req.method === 'GET' && req.url === '/api/jobs') return sendJson(res, 200, readStoredJobs());
+    if (req.method === 'POST' && req.url === '/api/jobs/sync') return sendJson(res, 200, await syncJobs('manual'));
     if (req.method === 'POST' && req.url === '/api/apify/auto') return await handleAutoRun(res);
     if (req.method === 'POST' && req.url === '/api/apify/run-actor') return await handleRunActor(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/run-task') return await handleRunTask(req, res);
@@ -265,4 +480,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Job Search Portal running at http://localhost:${PORT}`);
+  scheduleDailySync();
 });

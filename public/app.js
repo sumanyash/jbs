@@ -185,12 +185,16 @@ function applyServerConfig() {
 
   if (config.hasApifyKey) {
     els.apiKeyField.hidden = true;
-    els.serverStatus.textContent = 'Server Apify key is active. Portal is ready for one-click matching.';
+    const providerNames = Object.entries(config.providers || {})
+      .filter(([, active]) => active)
+      .map(([name]) => name)
+      .join(', ');
+    els.serverStatus.textContent = `Server automation is active. Providers: ${providerNames || 'free job feeds'}.`;
     els.serverStatus.className = 'server-status ready';
   } else {
     els.apiKeyField.hidden = false;
-    els.serverStatus.textContent = 'Add APIFY_API_KEY in server .env for fully automated search.';
-    els.serverStatus.className = 'server-status warn';
+    els.serverStatus.textContent = 'Free job feeds are active. Add optional API keys in .env for more sources.';
+    els.serverStatus.className = 'server-status ready';
   }
 
   setMode(config.defaultMode || 'task');
@@ -434,7 +438,7 @@ async function runSearch(event) {
 }
 
 async function autoRun() {
-  setStatus('Running fully automated match using server .env config...');
+  setStatus('Running fully automated match using server config...');
   try {
     const response = await fetch('/api/apify/auto', { method: 'POST' });
     const data = await response.json();
@@ -444,6 +448,20 @@ async function autoRun() {
     renderAll();
   } catch (error) {
     setStatus(error.message, true);
+  }
+}
+
+async function loadStoredJobs() {
+  try {
+    const response = await fetch('/api/jobs');
+    const data = await response.json();
+    if (data.items?.length) {
+      state.jobs = data.items.map(normalizeJob).map(scoreJob);
+      setStatus(`Loaded ${state.jobs.length} stored jobs from last server sync.`);
+      renderAll();
+    }
+  } catch {
+    setStatus('Sample jobs loaded. Server sync is available from Auto match.');
   }
 }
 
@@ -497,6 +515,7 @@ async function boot() {
 
   setMode('task');
   renderAll();
+  await loadStoredJobs();
 }
 
 boot();
