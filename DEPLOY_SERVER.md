@@ -122,6 +122,7 @@ APIFY_TASK_ID=
 DEFAULT_MAX_ITEMS=75
 DEFAULT_LOCATION=Remote, India, UAE
 DEFAULT_KEYWORDS=AI voice engineer,VoIP engineer,SIP engineer,telecom infrastructure,founding engineer,CPaaS platform engineer,Asterisk engineer,WebRTC engineer
+MIN_SCORE=38
 REMOTIVE_ENABLED=1
 ARBEITNOW_ENABLED=1
 STORE_MAX_JOBS=500

@@ -85,6 +85,7 @@ function readPortalConfig() {
     ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
     ollamaModel: process.env.OLLAMA_MODEL || 'qwen2.5:0.5b',
     ollamaMaxJobs: Number(process.env.OLLAMA_MAX_JOBS || 25),
+    minScore: Number(process.env.MIN_SCORE || 38),
   };
 }
 
@@ -205,7 +206,16 @@ function normalizeRemoteJob(item, source) {
 }
 
 function jobText(job) {
-  return [job.title, job.company, job.location, job.description, job.salary].filter(Boolean).join(' ').toLowerCase();
+  return stripHtml([job.title, job.company, job.location, job.description, job.salary].filter(Boolean).join(' ')).toLowerCase();
+}
+
+function keywordRegex(keyword) {
+  const escaped = keyword.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  return new RegExp(`(^|[^a-z0-9])${escaped}([^a-z0-9]|$)`, 'i');
+}
+
+function keywordMatches(text, keyword) {
+  return keywordRegex(keyword).test(text);
 }
 
 function scoreJobServer(job) {
@@ -218,12 +228,16 @@ function scoreJobServer(job) {
   ];
   const companies = ['vapi', 'retell', 'bland', 'twilio', 'plivo', 'bandwidth', 'elevenlabs', 'vonage', 'openai'];
   const haystack = jobText(job);
-  const matched = keywords.filter((keyword) => haystack.includes(keyword));
-  let score = 28 + matched.reduce((sum, keyword) => sum + (/voice|sip|voip|asterisk|telecom/.test(keyword) ? 6 : 4), 0);
+  const titleText = String(job.title || '').toLowerCase();
+  const matched = keywords.filter((keyword) => keywordMatches(haystack, keyword));
+  let score = matched.length ? 18 : 4;
+  score += matched.reduce((sum, keyword) => sum + (/voice|sip|voip|asterisk|telecom|webrtc|cpaas/.test(keyword) ? 8 : 5), 0);
   if (companies.some((company) => String(job.company || '').toLowerCase().includes(company))) score += 16;
   if (/remote|india|uae|dubai|jaipur/i.test(job.location || '')) score += 7;
   if (/senior|lead|staff|principal|founding|architect/i.test(job.title || '')) score += 8;
+  if (/(voice|voip|sip|asterisk|webrtc|telecom|telephony|cpaas|infrastructure|platform|devops|cloud)/i.test(titleText)) score += 12;
   if (/intern|fresh|junior|campus/i.test(haystack)) score -= 18;
+  if (/(bank|banking|finance|accounting|treasury|regulatory|ifrs|risk management|audit)/i.test(haystack) && matched.length < 2) score -= 30;
   return {
     ...job,
     score: Math.max(0, Math.min(100, Math.round(score))),
@@ -371,10 +385,10 @@ async function fetchArbeitnow(config) {
   const response = await fetch('https://www.arbeitnow.com/api/job-board-api');
   if (!response.ok) return [];
   const data = await response.json();
-  const keywords = config.defaultKeywords.map((keyword) => keyword.toLowerCase());
   return (data.data || [])
     .map((job) => normalizeRemoteJob(job, 'Arbeitnow'))
-    .filter((job) => keywords.some((keyword) => jobText(job).includes(keyword.split(' ')[0])));
+    .map(scoreJobServer)
+    .filter((job) => job.score >= config.minScore);
 }
 
 async function fetchJSearch(config) {
@@ -400,6 +414,7 @@ async function syncJobs(reason = 'manual') {
   const batches = await Promise.allSettled([fetchRemotive(config), fetchArbeitnow(config), fetchJSearch(config)]);
   const items = uniqueByUrl(batches.flatMap((batch) => batch.status === 'fulfilled' ? batch.value : []))
     .map(scoreJobServer)
+    .filter((job) => job.score >= config.minScore)
     .sort((a, b) => b.score - a.score)
     .slice(0, Number(process.env.STORE_MAX_JOBS || 500));
   const providerCounts = items.reduce((counts, item) => {
