@@ -23,6 +23,7 @@ http://localhost:4173
 - Reads Apify key and default search configuration from server `.env`.
 - Provides one-click Auto match using the server-side Apify setup.
 - Runs a daily server sync at 2:00 AM IST by default.
+- Uses local Ollama for AI enrichment when enabled. No paid API keys required.
 - Normalizes mixed job-result formats into one dashboard.
 - Scores jobs against Yash's resume keywords and target companies.
 - Boosts AI voice, SIP, VoIP, Asterisk, CPaaS, Linux, cloud, and founding engineer roles.
@@ -51,6 +52,24 @@ OPENAI_API_KEY=...
 GEMINI_API_KEY=...
 ANTHROPIC_API_KEY=...
 APIFY_API_KEY=...
+OLLAMA_ENABLED=1
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen2.5:0.5b
+```
+
+## Ollama
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+systemctl enable ollama
+systemctl start ollama
+ollama pull qwen2.5:0.5b
+```
+
+For an 8 GB server, `llama3.2:3b` is also usable:
+
+```bash
+ollama pull llama3.2:3b
 ```
 
 The real `.env` file must stay only on the server and should never be committed to GitHub.

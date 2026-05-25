@@ -81,6 +81,10 @@ function readPortalConfig() {
     openaiKey: process.env.OPENAI_API_KEY || '',
     geminiKey: process.env.GEMINI_API_KEY || '',
     claudeKey: process.env.ANTHROPIC_API_KEY || '',
+    ollamaEnabled: process.env.OLLAMA_ENABLED !== '0',
+    ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
+    ollamaModel: process.env.OLLAMA_MODEL || 'qwen2.5:0.5b',
+    ollamaMaxJobs: Number(process.env.OLLAMA_MAX_JOBS || 25),
   };
 }
 
@@ -106,7 +110,9 @@ function publicConfig() {
       openai: Boolean(config.openaiKey),
       gemini: Boolean(config.geminiKey),
       claude: Boolean(config.claudeKey),
+      ollama: config.ollamaEnabled,
     },
+    ollamaModel: config.ollamaModel,
     profileName: 'Yash Suman',
     bestRoles: [
       'AI Voice Infrastructure Engineer',
@@ -116,6 +122,15 @@ function publicConfig() {
       'Cloud Telephony Architect',
     ],
   };
+}
+
+function stripHtml(value = '') {
+  return String(value)
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function ensureDataDir() {
@@ -215,6 +230,127 @@ function scoreJobServer(job) {
     matched: matched.slice(0, 8),
     reason: matched.length ? `Matched on ${matched.slice(0, 5).join(', ')}.` : 'General infrastructure match.',
   };
+}
+
+function buildOllamaPrompt(job) {
+  return `You are helping Yash Suman find jobs. Yash is an AI Voice Infrastructure Engineer and Telecom Systems Architect with production SIP, VoIP, Asterisk, FreePBX, WebRTC, CPaaS, Vicidial, Linux, AWS, Docker, Kubernetes, CRM integration and founding engineer experience.
+
+Analyze this job and return ONLY valid JSON with these keys:
+fitScore: number from 0 to 100,
+fitSummary: short 1 sentence,
+matchedSkills: array of 3 to 8 strings,
+missingSkills: array of 0 to 5 strings,
+outreachDM: short LinkedIn DM under 70 words,
+coverHook: one strong cover letter opening under 45 words.
+
+Job:
+Title: ${job.title}
+Company: ${job.company}
+Location: ${job.location}
+Salary: ${job.salary || 'Not listed'}
+Description: ${stripHtml(job.description).slice(0, 3500)}`;
+}
+
+function extractJson(text) {
+  const raw = String(text || '').trim();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function ollamaGenerate(prompt, config) {
+  const response = await fetch(`${config.ollamaUrl.replace(/\/$/, '')}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.ollamaModel,
+      prompt,
+      stream: false,
+      options: {
+        temperature: 0.2,
+        num_predict: 450,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`Ollama request failed with ${response.status}`);
+  const data = await response.json();
+  return data.response || '';
+}
+
+async function enrichJobWithOllama(job, config) {
+  const text = await ollamaGenerate(buildOllamaPrompt(job), config);
+  const ai = extractJson(text);
+  if (!ai) {
+    return {
+      ...job,
+      ai: {
+        provider: 'ollama',
+        model: config.ollamaModel,
+        fitSummary: text.slice(0, 220) || 'Ollama returned an unstructured response.',
+        matchedSkills: job.matched || [],
+        missingSkills: [],
+        outreachDM: '',
+        coverHook: '',
+      },
+    };
+  }
+  const fitScore = Number(ai.fitScore);
+  return {
+    ...job,
+    score: Number.isFinite(fitScore) ? Math.max(0, Math.min(100, Math.round((job.score + fitScore) / 2))) : job.score,
+    ai: {
+      provider: 'ollama',
+      model: config.ollamaModel,
+      fitScore: Number.isFinite(fitScore) ? fitScore : null,
+      fitSummary: String(ai.fitSummary || ''),
+      matchedSkills: Array.isArray(ai.matchedSkills) ? ai.matchedSkills.slice(0, 8) : [],
+      missingSkills: Array.isArray(ai.missingSkills) ? ai.missingSkills.slice(0, 5) : [],
+      outreachDM: String(ai.outreachDM || ''),
+      coverHook: String(ai.coverHook || ''),
+    },
+  };
+}
+
+async function enrichStoredJobs() {
+  const config = readPortalConfig();
+  if (!config.ollamaEnabled) throw new Error('Ollama is disabled. Set OLLAMA_ENABLED=1 in .env.');
+  const stored = readStoredJobs();
+  const topJobs = stored.items
+    .slice()
+    .sort((a, b) => b.score - a.score)
+    .slice(0, config.ollamaMaxJobs);
+  const rest = stored.items.filter((job) => !topJobs.some((topJob) => topJob.id === job.id));
+  const enriched = [];
+  for (const job of topJobs) {
+    enriched.push(await enrichJobWithOllama(job, config));
+  }
+  const items = [...enriched, ...rest].sort((a, b) => b.score - a.score);
+  const payload = {
+    ...stored,
+    items,
+    lastEnrichedAt: new Date().toISOString(),
+    ollamaModel: config.ollamaModel,
+  };
+  writeStoredJobs(payload);
+  return payload;
+}
+
+async function testOllama() {
+  const config = readPortalConfig();
+  if (!config.ollamaEnabled) return { ok: false, error: 'Ollama disabled' };
+  const response = await fetch(`${config.ollamaUrl.replace(/\/$/, '')}/api/tags`);
+  if (!response.ok) return { ok: false, error: `Ollama returned ${response.status}` };
+  const data = await response.json();
+  const models = (data.models || []).map((model) => model.name);
+  return { ok: true, model: config.ollamaModel, models };
 }
 
 async function fetchRemotive(config) {
@@ -464,6 +600,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/api/config') return sendJson(res, 200, publicConfig());
     if (req.method === 'GET' && req.url === '/api/jobs') return sendJson(res, 200, readStoredJobs());
     if (req.method === 'POST' && req.url === '/api/jobs/sync') return sendJson(res, 200, await syncJobs('manual'));
+    if (req.method === 'POST' && req.url === '/api/jobs/enrich') return sendJson(res, 200, await enrichStoredJobs());
+    if (req.method === 'GET' && req.url === '/api/ollama/test') return sendJson(res, 200, await testOllama());
     if (req.method === 'POST' && req.url === '/api/apify/auto') return await handleAutoRun(res);
     if (req.method === 'POST' && req.url === '/api/apify/run-actor') return await handleRunActor(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/run-task') return await handleRunTask(req, res);

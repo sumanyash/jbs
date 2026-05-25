@@ -414,6 +414,27 @@ select:focus {
   line-height: 1.5;
 }
 
+.ai-block {
+  margin: 12px 0;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  padding: 12px;
+  background: #eef2ff;
+  color: #28324d;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ai-block strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #1d4ed8;
+}
+
+.ai-block p {
+  margin: 6px 0;
+}
+
 .job-actions {
   display: grid;
   gap: 10px;

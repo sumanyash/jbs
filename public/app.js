@@ -128,6 +128,7 @@ const els = {
   apiKeyField: document.querySelector('#apiKeyField'),
   serverStatus: document.querySelector('#serverStatus'),
   autoRunBtn: document.querySelector('#autoRunBtn'),
+  aiEnrichBtn: document.querySelector('#aiEnrichBtn'),
   taskId: document.querySelector('#taskId'),
   actorId: document.querySelector('#actorId'),
   datasetId: document.querySelector('#datasetId'),
@@ -278,6 +279,7 @@ function normalizeJob(item, index) {
     description: String(description),
     source: String(source),
     salary: String(salary),
+    ai: item.ai || null,
     raw: item,
   };
 }
@@ -313,6 +315,14 @@ function scoreJob(job) {
     ? `Matched on ${matched.slice(0, 5).join(', ')}.`
     : 'General infrastructure match, but fewer telecom or AI voice keywords were found.';
 
+  if (job.ai) {
+    return {
+      ...job,
+      matched: [...new Set([...(job.matched || []), ...matched])].slice(0, 8),
+      reason: job.reason || reason,
+    };
+  }
+
   return { ...job, score: finalScore, matched: [...new Set(matched)].slice(0, 8), reason };
 }
 
@@ -334,6 +344,19 @@ function renderJob(container, job, compact = false) {
 
   const apply = card.querySelector('a');
   apply.href = job.url && job.url !== '#' ? job.url : `https://www.google.com/search?q=${encodeURIComponent(`${job.company} ${job.title}`)}`;
+
+  const aiBlock = card.querySelector('.ai-block');
+  if (job.ai) {
+    aiBlock.hidden = false;
+    const missing = job.ai.missingSkills?.length ? `<p><b>Missing:</b> ${job.ai.missingSkills.join(', ')}</p>` : '';
+    const dm = job.ai.outreachDM ? `<p><b>DM:</b> ${job.ai.outreachDM}</p>` : '';
+    aiBlock.innerHTML = `
+      <strong>Ollama ${job.ai.model || ''}</strong>
+      <p>${job.ai.fitSummary || 'AI enrichment available.'}</p>
+      ${missing}
+      ${dm}
+    `;
+  }
 
   const save = card.querySelector('.save-job');
   const alreadySaved = state.saved.some((item) => item.id === job.id);
@@ -451,6 +474,23 @@ async function autoRun() {
   }
 }
 
+async function aiEnrich() {
+  setStatus('Ollama is enriching top jobs. This can take a few minutes...');
+  try {
+    const response = await fetch('/api/jobs/enrich', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Ollama enrichment failed.');
+    state.jobs = (data.items || []).map(normalizeJob).map((job) => {
+      const original = data.items.find((item) => item.id === job.id);
+      return { ...job, ai: original?.ai || null, score: original?.score || job.score };
+    });
+    setStatus(`Ollama enriched top jobs with ${data.ollamaModel || 'local model'}.`);
+    renderAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
 async function loadStoredJobs() {
   try {
     const response = await fetch('/api/jobs');
@@ -492,6 +532,7 @@ async function boot() {
   });
   document.querySelector('#saveSettingsBtn').addEventListener('click', saveSettings);
   els.autoRunBtn.addEventListener('click', autoRun);
+  els.aiEnrichBtn.addEventListener('click', aiEnrich);
   document.querySelector('#loadSampleBtn').addEventListener('click', () => {
     state.jobs = sampleJobs.map(normalizeJob).map(scoreJob);
     setStatus('Sample jobs loaded.');

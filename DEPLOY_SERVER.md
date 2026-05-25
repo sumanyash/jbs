@@ -98,6 +98,7 @@ sudo systemctl reload nginx
 - Keep all API keys private in `/var/www/job-search-portal/.env`.
 - The portal works without an Apify task ID using free job feeds.
 - It runs daily at 2:00 AM IST by default.
+- Local Ollama can enrich jobs without paid API keys.
 - Add Apify actor/task/dataset IDs later only if you want Apify-specific sources.
 
 Example `.env`:
@@ -112,6 +113,10 @@ OPENAI_API_KEY=
 GEMINI_API_KEY=
 ANTHROPIC_API_KEY=
 RAPIDAPI_JSEARCH_KEY=
+OLLAMA_ENABLED=1
+OLLAMA_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=qwen2.5:0.5b
+OLLAMA_MAX_JOBS=25
 DEFAULT_APIFY_MODE=task
 APIFY_TASK_ID=
 DEFAULT_MAX_ITEMS=75
@@ -127,4 +132,14 @@ After editing `.env`:
 ```bash
 sudo systemctl restart job-search-portal
 curl https://job.yjang.online/health
+```
+
+Install Ollama:
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl enable ollama
+sudo systemctl start ollama
+ollama pull qwen2.5:0.5b
+curl http://127.0.0.1:11434/api/tags
 ```
