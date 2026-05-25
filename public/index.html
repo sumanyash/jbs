@@ -49,6 +49,7 @@
           <button class="icon-button" id="loadSampleBtn" title="Load sample jobs" aria-label="Load sample jobs">
             <span aria-hidden="true">↺</span>
           </button>
+          <button class="primary-button" id="autoRunBtn">Auto match</button>
           <button class="primary-button" id="exportBtn">Export CSV</button>
         </div>
       </section>
@@ -67,9 +68,11 @@
             </div>
           </div>
 
-          <label>
+          <div class="server-status" id="serverStatus">Checking server config...</div>
+
+          <label id="apiKeyField">
             Apify API key
-            <input id="apiKey" type="password" autocomplete="off" placeholder="apify_api_..." required>
+            <input id="apiKey" type="password" autocomplete="off" placeholder="apify_api_...">
           </label>
 
           <div class="two-col">
@@ -111,7 +114,7 @@
             <button class="primary-button" type="submit">Run search</button>
             <button class="ghost-button" type="button" id="saveSettingsBtn">Save settings</button>
           </div>
-          <p class="hint" id="statusText">API key is stored only in this browser.</p>
+          <p class="hint" id="statusText">Best-fit search is prefilled from Yash's CV profile.</p>
         </form>
 
         <section class="panel profile-panel" id="profile">

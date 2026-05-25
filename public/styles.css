@@ -290,6 +290,29 @@ select:focus {
   font-size: 13px;
 }
 
+.server-status {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.server-status.ready {
+  border-color: #b7e4ce;
+  color: var(--green);
+  background: var(--soft-green);
+}
+
+.server-status.warn {
+  border-color: #f3d37a;
+  color: var(--amber);
+  background: var(--soft-amber);
+}
+
 .profile-block {
   margin-top: 16px;
   border-left: 4px solid var(--green);

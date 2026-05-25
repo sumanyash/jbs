@@ -5,6 +5,8 @@ Apify-powered job search dashboard tailored to Yash Suman's AI voice, telecom, S
 ## Run
 
 ```bash
+cp .env.example .env
+# edit .env and add APIFY_API_KEY + APIFY_TASK_ID
 node server.js
 ```
 
@@ -17,6 +19,8 @@ http://localhost:4173
 ## What It Does
 
 - Runs an Apify actor, Apify task, or reads an existing Apify dataset.
+- Reads Apify key and default search configuration from server `.env`.
+- Provides one-click Auto match using the server-side Apify setup.
 - Normalizes mixed job-result formats into one dashboard.
 - Scores jobs against Yash's resume keywords and target companies.
 - Boosts AI voice, SIP, VoIP, Asterisk, CPaaS, Linux, cloud, and founding engineer roles.
@@ -36,4 +40,12 @@ For custom actors, use Actor mode and edit the JSON input. Different actors expe
 
 ## Security
 
-The API key is saved only in browser `localStorage` when you click Save settings. It is not written into this project.
+Production mode should use `.env`:
+
+```text
+APIFY_API_KEY=...
+APIFY_TASK_ID=...
+DEFAULT_APIFY_MODE=task
+```
+
+The real `.env` file must stay only on the server and should never be committed to GitHub.

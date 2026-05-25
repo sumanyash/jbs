@@ -20,6 +20,8 @@ Example server path:
 
 ```bash
 cd /var/www/job-search-portal
+cp .env.example .env
+nano .env
 PORT=4173 node server.js
 ```
 
@@ -93,7 +95,26 @@ sudo systemctl reload nginx
 
 ## 5. Apify Use
 
-- Keep the Apify API key private.
-- Paste it in the portal UI.
-- The portal stores it only in that browser's local storage after Save settings.
+- Keep the Apify API key private in `/var/www/job-search-portal/.env`.
 - For easiest setup, create Apify tasks first and use Task mode.
+- Add your task ID in `.env` as `APIFY_TASK_ID=username~task-name`.
+- The portal will hide the API key field when `APIFY_API_KEY` exists on the server.
+
+Example `.env`:
+
+```text
+PORT=4173
+APIFY_API_KEY=apify_api_your_key_here
+DEFAULT_APIFY_MODE=task
+APIFY_TASK_ID=username~your-job-scraper-task
+DEFAULT_MAX_ITEMS=75
+DEFAULT_LOCATION=Remote, India, UAE
+DEFAULT_KEYWORDS=AI voice engineer,VoIP engineer,SIP engineer,telecom infrastructure,founding engineer,CPaaS platform engineer,Asterisk engineer,WebRTC engineer
+```
+
+After editing `.env`:
+
+```bash
+sudo systemctl restart job-search-portal
+curl https://job.yjang.online/health
+```

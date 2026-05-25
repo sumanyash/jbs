@@ -2,8 +2,12 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const PORT = Number(process.env.PORT || 4173);
 const PUBLIC_DIR = path.join(__dirname, 'public');
+const ENV_FILE = path.join(__dirname, '.env');
+
+loadEnv();
+
+const PORT = Number(process.env.PORT || 4173);
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -27,6 +31,68 @@ function sendJson(res, status, payload) {
 function sendHead(res, status = 200, headers = {}) {
   res.writeHead(status, headers);
   res.end();
+}
+
+function loadEnv() {
+  if (!fs.existsSync(ENV_FILE)) return;
+  const lines = fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
+    const [key, ...rest] = trimmed.split('=');
+    if (process.env[key]) continue;
+    process.env[key] = rest.join('=').trim().replace(/^['"]|['"]$/g, '');
+  }
+}
+
+function envList(key, fallback = []) {
+  const value = process.env[key];
+  if (!value) return fallback;
+  return value.split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function readPortalConfig() {
+  return {
+    apifyToken: process.env.APIFY_API_KEY || '',
+    defaultMode: process.env.DEFAULT_APIFY_MODE || 'task',
+    defaultTaskId: process.env.APIFY_TASK_ID || '',
+    defaultActorId: process.env.APIFY_ACTOR_ID || '',
+    defaultDatasetId: process.env.APIFY_DATASET_ID || '',
+    defaultMaxItems: Number(process.env.DEFAULT_MAX_ITEMS || 50),
+    defaultKeywords: envList('DEFAULT_KEYWORDS', [
+      'AI voice engineer',
+      'VoIP engineer',
+      'SIP engineer',
+      'telecom infrastructure',
+      'founding engineer',
+      'CPaaS platform engineer',
+      'Asterisk engineer',
+      'WebRTC engineer',
+    ]),
+    defaultLocation: process.env.DEFAULT_LOCATION || 'Remote, India, UAE',
+  };
+}
+
+function publicConfig() {
+  const config = readPortalConfig();
+  return {
+    hasApifyKey: Boolean(config.apifyToken),
+    defaultMode: config.defaultMode,
+    defaultTaskId: config.defaultTaskId,
+    defaultActorId: config.defaultActorId,
+    defaultDatasetId: config.defaultDatasetId,
+    defaultMaxItems: config.defaultMaxItems,
+    defaultKeywords: config.defaultKeywords,
+    defaultLocation: config.defaultLocation,
+    profileName: 'Yash Suman',
+    bestRoles: [
+      'AI Voice Infrastructure Engineer',
+      'VoIP/SIP Infrastructure Engineer',
+      'Founding Infrastructure Engineer',
+      'CPaaS Platform Engineer',
+      'Cloud Telephony Architect',
+    ],
+  };
 }
 
 function readBody(req) {
@@ -88,11 +154,12 @@ async function apifyFetch(url, token, options = {}) {
 
 async function handleRunActor(req, res) {
   const { token, actorId, input = {}, maxItems = 50, timeoutSecs = 120 } = await readBody(req);
+  const resolvedToken = token || readPortalConfig().apifyToken;
   const id = normalizeApifyId(actorId);
-  if (!token || !id) return sendJson(res, 400, { error: 'Apify token and actor ID are required.' });
+  if (!resolvedToken || !id) return sendJson(res, 400, { error: 'Apify key and actor ID are required. Add APIFY_API_KEY and APIFY_ACTOR_ID in .env.' });
 
   const url = `https://api.apify.com/v2/acts/${encodeURIComponent(id)}/run-sync-get-dataset-items?timeout=${Number(timeoutSecs) || 120}&maxItems=${Number(maxItems) || 50}`;
-  const items = await apifyFetch(url, token, {
+  const items = await apifyFetch(url, resolvedToken, {
     method: 'POST',
     body: JSON.stringify(input || {}),
   });
@@ -102,24 +169,53 @@ async function handleRunActor(req, res) {
 
 async function handleRunTask(req, res) {
   const { token, taskId, maxItems = 50, timeoutSecs = 120 } = await readBody(req);
+  const resolvedToken = token || readPortalConfig().apifyToken;
   const id = normalizeApifyId(taskId);
-  if (!token || !id) return sendJson(res, 400, { error: 'Apify token and task ID are required.' });
+  if (!resolvedToken || !id) return sendJson(res, 400, { error: 'Apify key and task ID are required. Add APIFY_API_KEY and APIFY_TASK_ID in .env.' });
 
   const url = `https://api.apify.com/v2/actor-tasks/${encodeURIComponent(id)}/run-sync-get-dataset-items?timeout=${Number(timeoutSecs) || 120}&maxItems=${Number(maxItems) || 50}`;
-  const items = await apifyFetch(url, token, { method: 'POST' });
+  const items = await apifyFetch(url, resolvedToken, { method: 'POST' });
 
   sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'task', taskId: id });
 }
 
 async function handleDataset(req, res) {
   const { token, datasetId, maxItems = 100 } = await readBody(req);
+  const resolvedToken = token || readPortalConfig().apifyToken;
   const id = String(datasetId || '').trim();
-  if (!token || !id) return sendJson(res, 400, { error: 'Apify token and dataset ID are required.' });
+  if (!resolvedToken || !id) return sendJson(res, 400, { error: 'Apify key and dataset ID are required. Add APIFY_API_KEY and APIFY_DATASET_ID in .env.' });
 
   const url = `https://api.apify.com/v2/datasets/${encodeURIComponent(id)}/items?maxItems=${Number(maxItems) || 100}`;
-  const items = await apifyFetch(url, token, { method: 'GET' });
+  const items = await apifyFetch(url, resolvedToken, { method: 'GET' });
 
   sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'dataset', datasetId: id });
+}
+
+async function handleAutoRun(res) {
+  const config = readPortalConfig();
+  if (!config.apifyToken) return sendJson(res, 400, { error: 'APIFY_API_KEY is missing in .env.' });
+
+  if (config.defaultMode === 'actor' && config.defaultActorId) {
+    const input = {
+      searchQueries: config.defaultKeywords.map((query) => `${query} ${config.defaultLocation}`),
+      maxItems: config.defaultMaxItems,
+      datePosted: 'week',
+    };
+    const url = `https://api.apify.com/v2/acts/${encodeURIComponent(normalizeApifyId(config.defaultActorId))}/run-sync-get-dataset-items?timeout=120&maxItems=${config.defaultMaxItems}`;
+    const items = await apifyFetch(url, config.apifyToken, { method: 'POST', body: JSON.stringify(input) });
+    return sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'auto-actor', actorId: config.defaultActorId });
+  }
+
+  if (config.defaultMode === 'dataset' && config.defaultDatasetId) {
+    const url = `https://api.apify.com/v2/datasets/${encodeURIComponent(config.defaultDatasetId)}/items?maxItems=${config.defaultMaxItems}`;
+    const items = await apifyFetch(url, config.apifyToken, { method: 'GET' });
+    return sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'auto-dataset', datasetId: config.defaultDatasetId });
+  }
+
+  if (!config.defaultTaskId) return sendJson(res, 400, { error: 'APIFY_TASK_ID is missing in .env.' });
+  const url = `https://api.apify.com/v2/actor-tasks/${encodeURIComponent(normalizeApifyId(config.defaultTaskId))}/run-sync-get-dataset-items?timeout=120&maxItems=${config.defaultMaxItems}`;
+  const items = await apifyFetch(url, config.apifyToken, { method: 'POST' });
+  return sendJson(res, 200, { items: Array.isArray(items) ? items : [], source: 'auto-task', taskId: config.defaultTaskId });
 }
 
 function serveStatic(req, res) {
@@ -152,6 +248,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       return sendJson(res, 200, { ok: true, service: 'job-search-portal' });
     }
+    if (req.method === 'GET' && req.url === '/api/config') return sendJson(res, 200, publicConfig());
+    if (req.method === 'POST' && req.url === '/api/apify/auto') return await handleAutoRun(res);
     if (req.method === 'POST' && req.url === '/api/apify/run-actor') return await handleRunActor(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/run-task') return await handleRunTask(req, res);
     if (req.method === 'POST' && req.url === '/api/apify/dataset') return await handleDataset(req, res);

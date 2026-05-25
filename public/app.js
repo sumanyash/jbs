@@ -118,12 +118,16 @@ const sampleJobs = [
 
 const state = {
   mode: 'task',
+  serverConfig: null,
   jobs: [],
   saved: JSON.parse(localStorage.getItem('savedJobs') || '[]'),
 };
 
 const els = {
   apiKey: document.querySelector('#apiKey'),
+  apiKeyField: document.querySelector('#apiKeyField'),
+  serverStatus: document.querySelector('#serverStatus'),
+  autoRunBtn: document.querySelector('#autoRunBtn'),
   taskId: document.querySelector('#taskId'),
   actorId: document.querySelector('#actorId'),
   datasetId: document.querySelector('#datasetId'),
@@ -156,17 +160,59 @@ function defaultActorInput() {
   };
 }
 
+async function loadServerConfig() {
+  try {
+    const response = await fetch('/api/config');
+    if (!response.ok) throw new Error('Config unavailable');
+    state.serverConfig = await response.json();
+    applyServerConfig();
+  } catch {
+    state.serverConfig = { hasApifyKey: false };
+    els.serverStatus.textContent = 'Server config not found. Manual mode is available.';
+    els.serverStatus.className = 'server-status warn';
+  }
+}
+
+function applyServerConfig() {
+  const config = state.serverConfig || {};
+  if (config.defaultTaskId) els.taskId.value = config.defaultTaskId;
+  if (config.defaultActorId) els.actorId.value = config.defaultActorId;
+  if (config.defaultDatasetId) els.datasetId.value = config.defaultDatasetId;
+  if (config.defaultMaxItems) els.maxItems.value = config.defaultMaxItems;
+  if (config.defaultKeywords?.length) els.keywords.value = config.defaultKeywords.join(', ');
+  if (config.defaultLocation) els.location.value = config.defaultLocation;
+  els.actorInput.value = JSON.stringify(defaultActorInput(), null, 2);
+
+  if (config.hasApifyKey) {
+    els.apiKeyField.hidden = true;
+    els.serverStatus.textContent = 'Server Apify key is active. Portal is ready for one-click matching.';
+    els.serverStatus.className = 'server-status ready';
+  } else {
+    els.apiKeyField.hidden = false;
+    els.serverStatus.textContent = 'Add APIFY_API_KEY in server .env for fully automated search.';
+    els.serverStatus.className = 'server-status warn';
+  }
+
+  setMode(config.defaultMode || 'task');
+}
+
 function loadSettings() {
   const settings = JSON.parse(localStorage.getItem('portalSettings') || '{}');
+  const serverManaged = state.serverConfig?.hasApifyKey
+    ? ['apiKey', 'taskId', 'actorId', 'datasetId', 'maxItems', 'keywords', 'location', 'actorInput']
+    : [];
   for (const [key, value] of Object.entries(settings)) {
+    if (serverManaged.includes(key)) continue;
     if (els[key]) els[key].value = value;
   }
-  els.actorInput.value = settings.actorInput || JSON.stringify(defaultActorInput(), null, 2);
+  if (!state.serverConfig?.hasApifyKey) {
+    els.actorInput.value = settings.actorInput || JSON.stringify(defaultActorInput(), null, 2);
+  }
 }
 
 function saveSettings() {
   const settings = {
-    apiKey: els.apiKey.value,
+    apiKey: state.serverConfig?.hasApifyKey ? '' : els.apiKey.value,
     taskId: els.taskId.value,
     actorId: els.actorId.value,
     datasetId: els.datasetId.value,
@@ -334,13 +380,13 @@ function persistSaved() {
 }
 
 async function runSearch(event) {
-  event.preventDefault();
+  if (event) event.preventDefault();
   saveSettings();
   setStatus('Running Apify search. This can take a minute...');
 
   let endpoint = '/api/apify/run-task';
   let payload = {
-    token: els.apiKey.value,
+    token: state.serverConfig?.hasApifyKey ? '' : els.apiKey.value,
     taskId: els.taskId.value,
     maxItems: Number(els.maxItems.value),
   };
@@ -355,7 +401,7 @@ async function runSearch(event) {
       return;
     }
     payload = {
-      token: els.apiKey.value,
+      token: state.serverConfig?.hasApifyKey ? '' : els.apiKey.value,
       actorId: els.actorId.value,
       input,
       maxItems: Number(els.maxItems.value),
@@ -365,7 +411,7 @@ async function runSearch(event) {
   if (state.mode === 'dataset') {
     endpoint = '/api/apify/dataset';
     payload = {
-      token: els.apiKey.value,
+      token: state.serverConfig?.hasApifyKey ? '' : els.apiKey.value,
       datasetId: els.datasetId.value,
       maxItems: Number(els.maxItems.value),
     };
@@ -387,6 +433,20 @@ async function runSearch(event) {
   }
 }
 
+async function autoRun() {
+  setStatus('Running fully automated match using server .env config...');
+  try {
+    const response = await fetch('/api/apify/auto', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Automated Apify run failed.');
+    state.jobs = (data.items || []).map(normalizeJob).map(scoreJob);
+    setStatus(`Auto match loaded ${state.jobs.length} jobs from ${data.source}.`);
+    renderAll();
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
 function exportCsv() {
   const rows = [['Score', 'Title', 'Company', 'Location', 'Salary', 'Source', 'URL', 'Reason']];
   state.jobs.sort((a, b) => b.score - a.score).forEach((job) => {
@@ -402,9 +462,10 @@ function exportCsv() {
   URL.revokeObjectURL(url);
 }
 
-function boot() {
+async function boot() {
   document.querySelector('#skillCloud').innerHTML = profileSkills.map((skill) => `<span class="tag">${skill}</span>`).join('');
   document.querySelector('#targetCompanies').innerHTML = targetCompanies.map((company) => `<span class="company-chip">${company}</span>`).join('');
+  await loadServerConfig();
   loadSettings();
   state.jobs = sampleJobs.map(normalizeJob).map(scoreJob);
 
@@ -412,6 +473,7 @@ function boot() {
     button.addEventListener('click', () => setMode(button.dataset.mode));
   });
   document.querySelector('#saveSettingsBtn').addEventListener('click', saveSettings);
+  els.autoRunBtn.addEventListener('click', autoRun);
   document.querySelector('#loadSampleBtn').addEventListener('click', () => {
     state.jobs = sampleJobs.map(normalizeJob).map(scoreJob);
     setStatus('Sample jobs loaded.');
